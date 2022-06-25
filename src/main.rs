@@ -118,14 +118,12 @@ impl Device {
 }
 
 struct BridgeDev {
-    key: String,
     sensors: HashSet<String>,
 }
 
 impl BridgeDev {
-    fn new(key: &str) -> BridgeDev {
+    fn new() -> BridgeDev {
         BridgeDev {
-            key: String::from(key),
             sensors: HashSet::new(),
         }
     }
@@ -155,17 +153,10 @@ impl Bridge {
         }
     }
 
-    fn authorize(&mut self, measurement: &Measurement, key: &str) -> bool {
+    fn update_device(&mut self, measurement: &Measurement) {
         let name = measurement.airrohr.name();
-        match self.devices.get(&name) {
-            Some(k) => {
-                k.key.eq(key)
-            }
-            None => {
-                self.devices.insert(name.clone(), BridgeDev::new(key));
-                true
-                // TODO: load device names and key from config, until then TOFU
-            }
+        if !self.devices.contains_key(&name) {
+            self.devices.insert(name.clone(), BridgeDev::new());
         }
     }
 
@@ -200,8 +191,8 @@ impl Bridge {
     }
 }
 
-#[post("/api/<key>", data="<data>")]
-fn api(dev_ref: &State<BridgeReference>, key: &str, data: &str) -> Status {
+#[post("/api", data="<data>")]
+fn api(dev_ref: &State<BridgeReference>, data: &str) -> Status {
     let mut devices = match dev_ref.lock() {
         Ok(dev) => dev,
         Err(_) => return Status::InternalServerError
@@ -212,9 +203,7 @@ fn api(dev_ref: &State<BridgeReference>, key: &str, data: &str) -> Status {
             return Status::BadRequest;
         }
     };
-    if !devices.authorize(&device_measurement, key) {
-        return Status::Unauthorized;
-    }
+    devices.update_device(&device_measurement);
     for v in &device_measurement.sensordatavalues {
         if !v.supported() {
             continue;
