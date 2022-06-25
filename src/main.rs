@@ -2,9 +2,10 @@
 use rocket::{http::Status, State};
 use serde_json;
 use serde::{Deserialize, Serialize};
-use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex}, env, time::Duration};
+use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex}, time::Duration};
 use paho_mqtt::{Client, ConnectOptionsBuilder, Message};
 use phf::phf_map;
+use config;
 
 struct Sensor {
     class: &'static str,
@@ -138,7 +139,6 @@ type BridgeReference = Arc<Mutex<Bridge>>;
 
 impl Bridge {
     fn new(mqtturi: &str, user: &str, password: &str) -> Bridge {
-        println!("{mqtturi}");
         let mqtt = Client::new(mqtturi).unwrap();
         let conn_opts = ConnectOptionsBuilder::new()
             .keep_alive_interval(Duration::from_secs(20))
@@ -222,8 +222,14 @@ fn api(dev_ref: &State<BridgeReference>, data: &str) -> Status {
 
 #[launch]
 fn server() -> _{
-    let args: Vec<String> = env::args().collect();
-    let bridge = Bridge::new(&args[1], &args[2], &args[3]);
+    let settings = config::Config::builder()
+        .add_source(config::File::with_name("Settings"))
+        .build()
+        .expect("failed to read Settings.toml");
+    let bridge = Bridge::new(
+        &settings.get_string("server").expect("failed to get server from settings"),
+        &settings.get_string("user").expect("failed to get user from settings"),
+        &settings.get_string("password").expect("failed to get password from settings"));
     rocket::build()
         .mount("/", routes![api])
         .manage(Arc::new(Mutex::new(bridge)))
