@@ -2,7 +2,7 @@
 use rocket::{http::Status, State};
 use serde_json;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::{Arc, Mutex}, env, time::Duration};
+use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex}, env, time::Duration};
 use paho_mqtt::{Client, ConnectOptionsBuilder, Message};
 use phf::phf_map;
 
@@ -12,7 +12,12 @@ struct Sensor {
 }
 
 static SENSORS: phf::Map<&'static str, Sensor> = phf_map! {
-    "BME280_temperature" => Sensor {class: "temperature", unit: "C"},
+    "BME280_temperature" => Sensor {class: "temperature", unit: "°C"},
+    "BME280_humidity" => Sensor {class: "humidity", unit: "%"},
+    "BME280_pressure" => Sensor {class: "pressure", unit: "Pa"},
+    "SDS_P1" => Sensor {class: "pm10", unit: "µg/m³"},
+    "SDS_P2" => Sensor {class: "pm25", unit: "µg/m³"},
+    "signal" => Sensor {class: "signal_strength", unit: "dBm"},
 };
 
 #[derive(Debug, Deserialize)]
@@ -114,14 +119,14 @@ impl Device {
 
 struct BridgeDev {
     key: String,
-    seen: bool
+    sensors: HashSet<String>,
 }
 
 impl BridgeDev {
     fn new(key: &str) -> BridgeDev {
         BridgeDev {
             key: String::from(key),
-            seen: false
+            sensors: HashSet::new(),
         }
     }
 }
@@ -164,9 +169,9 @@ impl Bridge {
         }
     }
 
-    fn seen(&self, measurement: &Measurement) -> bool {
-        match self.devices.get(&measurement.airrohr.name()) {
-            Some(b) => b.seen,
+    fn seen(&self, a: &Airrohr, sdv: &SensorDataValue) -> bool {
+        match self.devices.get(&a.name()) {
+            Some(b) => b.sensors.contains(&sdv.value_type),
             None => false
         }
     }
@@ -183,9 +188,9 @@ impl Bridge {
             Ok(s) => s,
             Err(_) => return true
         };
-        let result = self.mqtt.publish(Message::new(format!("homeassistant/sensor/{}/config", &a.name()), json_str, 1)).is_err();
+        let result = self.mqtt.publish(Message::new(format!("homeassistant/sensor/{}/{}/config", &a.name(), v.value_type), json_str, 1)).is_err();
         if let Some(b) = self.devices.get_mut(&a.name()) {
-            b.seen = true;
+            b.sensors.insert(v.value_type.clone());
         }
         result
     }
@@ -214,7 +219,7 @@ fn api(dev_ref: &State<BridgeReference>, key: &str, data: &str) -> Status {
         if !v.supported() {
             continue;
         }
-        if !devices.seen(&device_measurement) {
+        if !devices.seen(&device_measurement.airrohr, &v) {
             if devices.advertise(&device_measurement.airrohr, &v) {
                 return Status::InternalServerError
             }
