@@ -1,8 +1,8 @@
 {
-    "BME280_temperature": {"class": "temperature", "unit": "°C"},
-    "BME280_humidity": {"class": "humidity", "unit": "%"},
-    "BME280_pressure": {"class": "pressure", "unit": "Pa"},
-    "SDS_P1": {"class": "pm10", "unit": "µg/m³"},
-    "SDS_P2": {"class": "pm25", "unit": "µg/m³"},
-    "signal": {"class": "signal_strength", "unit": "dBm"}
+    "BME280_temperature": {"class": "temperature", "unit": "°C", "value_template": "{{ value }}"},
+    "BME280_humidity": {"class": "humidity", "unit": "%", "value_template": "{{ value }}"},
+    "BME280_pressure": {"class": "pressure", "unit": "hPa", "value_template": "{{ float(value) / 100 }}"},
+    "SDS_P1": {"class": "pm10", "unit": "µg/m³", "value_template": "{{ value }}"},
+    "SDS_P2": {"class": "pm25", "unit": "µg/m³", "value_template": "{{ value }}"},
+    "signal": {"class": "signal_strength", "unit": "dBm", "value_template": "{{ value }}"}
 }

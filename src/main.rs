@@ -9,7 +9,8 @@ use config;
 #[derive(Debug, Deserialize)]
 struct Sensor {
     class: String,
-    unit: String
+    unit: String,
+    value_template: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,7 +69,7 @@ impl Airrohr {
 }
 
 impl Entity {
-    fn new(a: &Airrohr, sensor: &str, device_class: Option<String>, unit_of_measurement: Option<String>) -> Option<Entity> {
+    fn new(a: &Airrohr, sensor: &str, device_class: Option<String>, unit_of_measurement: Option<String>, value_template: Option<String>) -> Option<Entity> {
         let id_name = String::from(format!("{}-{}", a.name(), sensor));
         Some(Entity {
             name: id_name.clone(),
@@ -76,7 +77,7 @@ impl Entity {
             unique_id: id_name,
             device_class: String::from(device_class?),
             unit_of_measurement: String::from(unit_of_measurement?),
-            value_template: String::from("{{ value }}")
+            value_template: String::from(value_template?)
         })
     }
 }
@@ -158,6 +159,10 @@ impl Bridge {
         Some(String::from(self.sensors.get(&v.value_type)?.unit.clone()))
     }
 
+    fn value_template(&self, v: &SensorDataValue) -> Option<String> {
+        Some(String::from(self.sensors.get(&v.value_type)?.value_template.clone()))
+    }
+
     fn advertise(&mut self, a: &Airrohr, v: &SensorDataValue) -> bool {
         let config = Config {
             device: Device::new(a),
@@ -165,7 +170,8 @@ impl Bridge {
                 a,
                 &v.value_type,
                 self.device_class(&v),
-                self.unit_of_measurement(&v)) {
+                self.unit_of_measurement(&v),
+                self.value_template(&v)) {
                 Some(e) => e,
                 None => return false
             }
