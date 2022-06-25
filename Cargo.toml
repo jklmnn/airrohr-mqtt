@@ -1,5 +1,5 @@
 [package]
-name = "ahm"
+name = "airrohr-mqtt"
 version = "0.1.0"
 edition = "2021"
 
