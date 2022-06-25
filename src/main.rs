@@ -2,7 +2,8 @@
 use rocket::{http::Status, State};
 use serde_json::json;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::{collections::HashMap, sync::{Arc, Mutex}, env, time::Duration};
+use paho_mqtt::{Client, ConnectOptionsBuilder};
 
 #[derive(Debug, Deserialize)]
 struct SensorDataValue {
@@ -97,16 +98,26 @@ impl Device {
 
 struct Bridge {
     devices: HashMap<String, String>,
+    mqtt: Client,
 }
 
 type BridgeReference = Arc<Mutex<Bridge>>;
 
 impl Bridge {
-    fn new() -> BridgeReference {
-        let bridge = Bridge {
-            devices: HashMap::<String, String>::new()
-        };
-        Arc::new(Mutex::new(bridge))
+    fn new(mqtturi: &str, user: &str, password: &str) -> Bridge {
+        println!("{mqtturi}");
+        let mut mqtt = Client::new(mqtturi).unwrap();
+        let conn_opts = ConnectOptionsBuilder::new()
+            .keep_alive_interval(Duration::from_secs(20))
+            .clean_session(true)
+            .user_name(user)
+            .password(password)
+            .finalize();
+        mqtt.connect(conn_opts).unwrap();
+        Bridge {
+            devices: HashMap::<String, String>::new(),
+            mqtt
+        }
     }
 
     fn authorize(&mut self, measurement: &Measurement, key: &str) -> bool {
@@ -131,8 +142,7 @@ fn api(dev_ref: &State<BridgeReference>, key: &str, data: &str) -> Status {
     };
     let device_measurement: Measurement = match serde_json::from_str(data) {
         Ok(dev) => dev,
-        Err(e) => {
-            println!("{e}");
+        Err(_) => {
             return Status::BadRequest;
         }
     };
@@ -144,7 +154,9 @@ fn api(dev_ref: &State<BridgeReference>, key: &str, data: &str) -> Status {
 
 #[launch]
 fn server() -> _{
+    let args: Vec<String> = env::args().collect();
+    let bridge = Bridge::new(&args[1], &args[2], &args[3]);
     rocket::build()
         .mount("/", routes![api])
-        .manage(Bridge::new())
+        .manage(Arc::new(Mutex::new(bridge)))
 }
