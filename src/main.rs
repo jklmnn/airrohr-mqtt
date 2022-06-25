@@ -2,24 +2,15 @@
 use rocket::{http::Status, State};
 use serde_json;
 use serde::{Deserialize, Serialize};
-use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex}, time::Duration, fs::File, io::BufReader};
 use paho_mqtt::{Client, ConnectOptionsBuilder, Message};
-use phf::phf_map;
 use config;
 
+#[derive(Debug, Deserialize)]
 struct Sensor {
-    class: &'static str,
-    unit: &'static str
+    class: String,
+    unit: String
 }
-
-static SENSORS: phf::Map<&'static str, Sensor> = phf_map! {
-    "BME280_temperature" => Sensor {class: "temperature", unit: "°C"},
-    "BME280_humidity" => Sensor {class: "humidity", unit: "%"},
-    "BME280_pressure" => Sensor {class: "pressure", unit: "Pa"},
-    "SDS_P1" => Sensor {class: "pm10", unit: "µg/m³"},
-    "SDS_P2" => Sensor {class: "pm25", unit: "µg/m³"},
-    "signal" => Sensor {class: "signal_strength", unit: "dBm"},
-};
 
 #[derive(Debug, Deserialize)]
 struct SensorDataValue {
@@ -66,39 +57,25 @@ struct Config {
     entity: Entity
 }
 
-impl SensorDataValue {
-    fn supported(&self) -> bool {
-        SENSORS.contains_key(&self.value_type)
-    }
-
-    fn class(&self) -> Option<String> {
-        Some(String::from(SENSORS.get(&self.value_type)?.class))
-    }
-
-    fn unit(&self) -> Option<String> {
-        Some(String::from(SENSORS.get(&self.value_type)?.unit))
-    }
-}
-
 impl Airrohr {
     fn name(&self) -> String {
         format!("airrohr-{}", self.esp8266id)
     }
 
-    fn state_topic(&self, sdv: &SensorDataValue) -> String {
-        String::from(format!("airrohr/{}/{}", self.name(), sdv.value_type))
+    fn state_topic(&self, sensor: &str) -> String {
+        String::from(format!("airrohr/{}/{}", self.name(), sensor))
     }
 }
 
 impl Entity {
-    fn new(a: &Airrohr, sdv: &SensorDataValue) -> Option<Entity> {
-        let id_name = String::from(format!("{}-{}", a.name(), sdv.value_type));
+    fn new(a: &Airrohr, sensor: &str, device_class: Option<String>, unit_of_measurement: Option<String>) -> Option<Entity> {
+        let id_name = String::from(format!("{}-{}", a.name(), sensor));
         Some(Entity {
             name: id_name.clone(),
-            state_topic: a.state_topic(sdv),
+            state_topic: a.state_topic(sensor),
             unique_id: id_name,
-            device_class: sdv.class()?,
-            unit_of_measurement: sdv.unit()?,
+            device_class: String::from(device_class?),
+            unit_of_measurement: String::from(unit_of_measurement?),
             value_template: String::from("{{ value }}")
         })
     }
@@ -133,12 +110,13 @@ impl BridgeDev {
 struct Bridge {
     devices: HashMap<String, BridgeDev>,
     mqtt: Client,
+    sensors: HashMap<String, Sensor>,
 }
 
 type BridgeReference = Arc<Mutex<Bridge>>;
 
 impl Bridge {
-    fn new(mqtturi: &str, user: &str, password: &str) -> Bridge {
+    fn new(mqtturi: &str, user: &str, password: &str, sensors: HashMap<String, Sensor>) -> Bridge {
         let mqtt = Client::new(mqtturi).unwrap();
         let conn_opts = ConnectOptionsBuilder::new()
             .keep_alive_interval(Duration::from_secs(20))
@@ -149,7 +127,8 @@ impl Bridge {
         mqtt.connect(conn_opts).unwrap();
         Bridge {
             devices: HashMap::<String, BridgeDev>::new(),
-            mqtt
+            mqtt,
+            sensors
         }
     }
 
@@ -167,10 +146,26 @@ impl Bridge {
         }
     }
 
+    fn supported(&self, v: &SensorDataValue) -> bool {
+        self.sensors.contains_key(&v.value_type)
+    }
+
+    fn device_class(&self, v: &SensorDataValue) -> Option<String> {
+        Some(String::from(self.sensors.get(&v.value_type)?.class.clone()))
+    }
+
+    fn unit_of_measurement(&self, v: &SensorDataValue) -> Option<String> {
+        Some(String::from(self.sensors.get(&v.value_type)?.unit.clone()))
+    }
+
     fn advertise(&mut self, a: &Airrohr, v: &SensorDataValue) -> bool {
         let config = Config {
             device: Device::new(a),
-            entity: match Entity::new(a, v) {
+            entity: match Entity::new(
+                a,
+                &v.value_type,
+                self.device_class(&v),
+                self.unit_of_measurement(&v)) {
                 Some(e) => e,
                 None => return false
             }
@@ -187,7 +182,7 @@ impl Bridge {
     }
 
     fn send_data(&self, a: &Airrohr, v: &SensorDataValue) -> bool {
-        self.mqtt.publish(Message::new(a.state_topic(&v), v.value.clone(), 0)).is_err()
+        self.mqtt.publish(Message::new(a.state_topic(&v.value_type), v.value.clone(), 0)).is_err()
     }
 }
 
@@ -205,7 +200,7 @@ fn api(dev_ref: &State<BridgeReference>, data: &str) -> Status {
     };
     devices.update_device(&device_measurement);
     for v in &device_measurement.sensordatavalues {
-        if !v.supported() {
+        if !devices.supported(&v) {
             continue;
         }
         if !devices.seen(&device_measurement.airrohr, &v) {
@@ -226,10 +221,13 @@ fn server() -> _{
         .add_source(config::File::with_name("Settings"))
         .build()
         .expect("failed to read Settings.toml");
+    let file = File::open(&settings.get_string("sensors").expect("failed to get sensor definitions"))
+        .expect("unable to open def file");
     let bridge = Bridge::new(
         &settings.get_string("server").expect("failed to get server from settings"),
         &settings.get_string("user").expect("failed to get user from settings"),
-        &settings.get_string("password").expect("failed to get password from settings"));
+        &settings.get_string("password").expect("failed to get password from settings"),
+        serde_json::from_reader(BufReader::new(file)).expect("failed to parse definitions"));
     rocket::build()
         .mount("/", routes![api])
         .manage(Arc::new(Mutex::new(bridge)))

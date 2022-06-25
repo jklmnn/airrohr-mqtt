@@ -1,0 +1,8 @@
+{
+    "BME280_temperature": {"class": "temperature", "unit": "°C"},
+    "BME280_humidity": {"class": "humidity", "unit": "%"},
+    "BME280_pressure": {"class": "pressure", "unit": "Pa"},
+    "SDS_P1": {"class": "pm10", "unit": "µg/m³"},
+    "SDS_P2": {"class": "pm25", "unit": "µg/m³"},
+    "signal": {"class": "signal_strength", "unit": "dBm"}
+}
