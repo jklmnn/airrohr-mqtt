@@ -1,9 +1,19 @@
 #[macro_use] extern crate rocket;
 use rocket::{http::Status, State};
-use serde_json::json;
+use serde_json;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::{Arc, Mutex}, env, time::Duration};
-use paho_mqtt::{Client, ConnectOptionsBuilder};
+use paho_mqtt::{Client, ConnectOptionsBuilder, Message};
+use phf::phf_map;
+
+struct Sensor {
+    class: &'static str,
+    unit: &'static str
+}
+
+static SENSORS: phf::Map<&'static str, Sensor> = phf_map! {
+    "BME280_temperature" => Sensor {class: "temperature", unit: "C"},
+};
 
 #[derive(Debug, Deserialize)]
 struct SensorDataValue {
@@ -50,33 +60,39 @@ struct Config {
     entity: Entity
 }
 
-fn sensor_properties(sensor: &str) -> Option<(String, String)> {
-    match sensor {
-        "BME280_temperature" => Some((String::from("temperature"), String::from("C"))),
-        _ => None
+impl SensorDataValue {
+    fn supported(&self) -> bool {
+        SENSORS.contains_key(&self.value_type)
+    }
+
+    fn class(&self) -> Option<String> {
+        Some(String::from(SENSORS.get(&self.value_type)?.class))
+    }
+
+    fn unit(&self) -> Option<String> {
+        Some(String::from(SENSORS.get(&self.value_type)?.unit))
     }
 }
 
 impl Airrohr {
-    fn id(&self) -> String {
-        self.esp8266id.clone()
-    }
-
     fn name(&self) -> String {
         format!("airrohr-{}", self.esp8266id)
+    }
+
+    fn state_topic(&self, sdv: &SensorDataValue) -> String {
+        String::from(format!("airrohr/{}/{}", self.name(), sdv.value_type))
     }
 }
 
 impl Entity {
     fn new(a: &Airrohr, sdv: &SensorDataValue) -> Option<Entity> {
-        let (dev_class, unit)= sensor_properties(&sdv.value_type)?;
         let id_name = String::from(format!("{}-{}", a.name(), sdv.value_type));
         Some(Entity {
             name: id_name.clone(),
-            state_topic: String::from(format!("airrohr/{}/{}", a.name(), sdv.value_type)),
+            state_topic: a.state_topic(sdv),
             unique_id: id_name,
-            device_class: dev_class,
-            unit_of_measurement: unit,
+            device_class: sdv.class()?,
+            unit_of_measurement: sdv.unit()?,
             value_template: String::from("{{ value }}")
         })
     }
@@ -96,8 +112,22 @@ impl Device {
     }
 }
 
+struct BridgeDev {
+    key: String,
+    seen: bool
+}
+
+impl BridgeDev {
+    fn new(key: &str) -> BridgeDev {
+        BridgeDev {
+            key: String::from(key),
+            seen: false
+        }
+    }
+}
+
 struct Bridge {
-    devices: HashMap<String, String>,
+    devices: HashMap<String, BridgeDev>,
     mqtt: Client,
 }
 
@@ -106,7 +136,7 @@ type BridgeReference = Arc<Mutex<Bridge>>;
 impl Bridge {
     fn new(mqtturi: &str, user: &str, password: &str) -> Bridge {
         println!("{mqtturi}");
-        let mut mqtt = Client::new(mqtturi).unwrap();
+        let mqtt = Client::new(mqtturi).unwrap();
         let conn_opts = ConnectOptionsBuilder::new()
             .keep_alive_interval(Duration::from_secs(20))
             .clean_session(true)
@@ -115,22 +145,53 @@ impl Bridge {
             .finalize();
         mqtt.connect(conn_opts).unwrap();
         Bridge {
-            devices: HashMap::<String, String>::new(),
+            devices: HashMap::<String, BridgeDev>::new(),
             mqtt
         }
     }
 
     fn authorize(&mut self, measurement: &Measurement, key: &str) -> bool {
-        match self.devices.get(&measurement.airrohr.name()) {
+        let name = measurement.airrohr.name();
+        match self.devices.get(&name) {
             Some(k) => {
-                k.eq(key)
+                k.key.eq(key)
             }
             None => {
-                self.devices.insert(measurement.airrohr.name(), String::from(key));
-                let device = Device::new(&measurement.airrohr);
+                self.devices.insert(name.clone(), BridgeDev::new(key));
                 true
+                // TODO: load device names and key from config, until then TOFU
             }
         }
+    }
+
+    fn seen(&self, measurement: &Measurement) -> bool {
+        match self.devices.get(&measurement.airrohr.name()) {
+            Some(b) => b.seen,
+            None => false
+        }
+    }
+
+    fn advertise(&mut self, a: &Airrohr, v: &SensorDataValue) -> bool {
+        let config = Config {
+            device: Device::new(a),
+            entity: match Entity::new(a, v) {
+                Some(e) => e,
+                None => return false
+            }
+        };
+        let json_str = match serde_json::to_string(&config) {
+            Ok(s) => s,
+            Err(_) => return true
+        };
+        let result = self.mqtt.publish(Message::new(format!("homeassistant/sensor/{}/config", &a.name()), json_str, 1)).is_err();
+        if let Some(b) = self.devices.get_mut(&a.name()) {
+            b.seen = true;
+        }
+        result
+    }
+
+    fn send_data(&self, a: &Airrohr, v: &SensorDataValue) -> bool {
+        self.mqtt.publish(Message::new(a.state_topic(&v), v.value.clone(), 0)).is_err()
     }
 }
 
@@ -148,6 +209,19 @@ fn api(dev_ref: &State<BridgeReference>, key: &str, data: &str) -> Status {
     };
     if !devices.authorize(&device_measurement, key) {
         return Status::Unauthorized;
+    }
+    for v in &device_measurement.sensordatavalues {
+        if !v.supported() {
+            continue;
+        }
+        if !devices.seen(&device_measurement) {
+            if devices.advertise(&device_measurement.airrohr, &v) {
+                return Status::InternalServerError
+            }
+        }
+        if devices.send_data(&device_measurement.airrohr, &v) {
+            return Status::InternalServerError
+        }
     }
     Status::Ok
 }
