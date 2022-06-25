@@ -1,10 +1,15 @@
-#[macro_use] extern crate rocket;
-use rocket::{http::Status, State};
-use serde_json;
-use serde::{Deserialize, Serialize};
-use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex}, time::Duration, fs::File, io::BufReader};
+#[macro_use]
+extern crate rocket;
 use paho_mqtt::{Client, ConnectOptionsBuilder, Message};
-use config;
+use rocket::{http::Status, State};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    io::BufReader,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 #[derive(Debug, Deserialize)]
 struct Sensor {
@@ -16,7 +21,7 @@ struct Sensor {
 #[derive(Debug, Deserialize)]
 struct SensorDataValue {
     value_type: String,
-    value: String
+    value: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,7 +34,7 @@ struct Airrohr {
 struct Measurement {
     #[serde(flatten)]
     airrohr: Airrohr,
-    sensordatavalues: Vec<SensorDataValue>
+    sensordatavalues: Vec<SensorDataValue>,
 }
 
 #[derive(Debug, Serialize)]
@@ -38,7 +43,7 @@ struct Device {
     manufacturer: String,
     model: String,
     name: String,
-    sw_version: String
+    sw_version: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,7 +60,7 @@ struct Entity {
 struct Config {
     device: Device,
     #[serde(flatten)]
-    entity: Entity
+    entity: Entity,
 }
 
 impl Airrohr {
@@ -64,20 +69,26 @@ impl Airrohr {
     }
 
     fn state_topic(&self, sensor: &str) -> String {
-        String::from(format!("airrohr/{}/{}", self.name(), sensor))
+        format!("airrohr/{}/{}", self.name(), sensor)
     }
 }
 
 impl Entity {
-    fn new(a: &Airrohr, sensor: &str, device_class: Option<String>, unit_of_measurement: Option<String>, value_template: Option<String>) -> Option<Entity> {
-        let id_name = String::from(format!("{}-{}", a.name(), sensor));
+    fn new(
+        a: &Airrohr,
+        sensor: &str,
+        device_class: Option<String>,
+        unit_of_measurement: Option<String>,
+        value_template: Option<String>,
+    ) -> Option<Entity> {
+        let id_name = format!("{}-{}", a.name(), sensor);
         Some(Entity {
             name: id_name.clone(),
             state_topic: a.state_topic(sensor),
             unique_id: id_name,
-            device_class: String::from(device_class?),
-            unit_of_measurement: String::from(unit_of_measurement?),
-            value_template: String::from(value_template?)
+            device_class: device_class?,
+            unit_of_measurement: unit_of_measurement?,
+            value_template: value_template?,
         })
     }
 }
@@ -85,13 +96,15 @@ impl Entity {
 impl Device {
     fn new(a: &Airrohr) -> Device {
         Device {
-            identifiers: vec![a.name(),
-                              String::from(format!("Feinstaubsensor-{}", a.esp8266id)),
-                              String::from(format!("Particulate Matter {}", a.esp8266id))],
+            identifiers: vec![
+                a.name(),
+                format!("Feinstaubsensor-{}", a.esp8266id),
+                format!("Particulate Matter {}", a.esp8266id),
+            ],
             manufacturer: String::from("Open Knowledge Lab Stuttgart a.o. (Code for Germany)"),
             model: String::from("Particulate matter sensor"),
             name: a.name(),
-            sw_version: a.software_version.clone()
+            sw_version: a.software_version.clone(),
         }
     }
 }
@@ -129,21 +142,19 @@ impl Bridge {
         Bridge {
             devices: HashMap::<String, BridgeDev>::new(),
             mqtt,
-            sensors
+            sensors,
         }
     }
 
     fn update_device(&mut self, measurement: &Measurement) {
         let name = measurement.airrohr.name();
-        if !self.devices.contains_key(&name) {
-            self.devices.insert(name.clone(), BridgeDev::new());
-        }
+        self.devices.entry(name).or_insert_with(BridgeDev::new);
     }
 
     fn seen(&self, a: &Airrohr, sdv: &SensorDataValue) -> bool {
         match self.devices.get(&a.name()) {
             Some(b) => b.sensors.contains(&sdv.value_type),
-            None => false
+            None => false,
         }
     }
 
@@ -152,15 +163,15 @@ impl Bridge {
     }
 
     fn device_class(&self, v: &SensorDataValue) -> Option<String> {
-        Some(String::from(self.sensors.get(&v.value_type)?.class.clone()))
+        Some(self.sensors.get(&v.value_type)?.class.clone())
     }
 
     fn unit_of_measurement(&self, v: &SensorDataValue) -> Option<String> {
-        Some(String::from(self.sensors.get(&v.value_type)?.unit.clone()))
+        Some(self.sensors.get(&v.value_type)?.unit.clone())
     }
 
     fn value_template(&self, v: &SensorDataValue) -> Option<String> {
-        Some(String::from(self.sensors.get(&v.value_type)?.value_template.clone()))
+        Some(self.sensors.get(&v.value_type)?.value_template.clone())
     }
 
     fn advertise(&mut self, a: &Airrohr, v: &SensorDataValue) -> bool {
@@ -169,18 +180,26 @@ impl Bridge {
             entity: match Entity::new(
                 a,
                 &v.value_type,
-                self.device_class(&v),
-                self.unit_of_measurement(&v),
-                self.value_template(&v)) {
+                self.device_class(v),
+                self.unit_of_measurement(v),
+                self.value_template(v),
+            ) {
                 Some(e) => e,
-                None => return false
-            }
+                None => return false,
+            },
         };
         let json_str = match serde_json::to_string(&config) {
             Ok(s) => s,
-            Err(_) => return true
+            Err(_) => return true,
         };
-        let result = self.mqtt.publish(Message::new(format!("homeassistant/sensor/{}/{}/config", &a.name(), v.value_type), json_str, 1)).is_err();
+        let result = self
+            .mqtt
+            .publish(Message::new(
+                format!("homeassistant/sensor/{}/{}/config", &a.name(), v.value_type),
+                json_str,
+                1,
+            ))
+            .is_err();
         if let Some(b) = self.devices.get_mut(&a.name()) {
             b.sensors.insert(v.value_type.clone());
         }
@@ -188,15 +207,21 @@ impl Bridge {
     }
 
     fn send_data(&self, a: &Airrohr, v: &SensorDataValue) -> bool {
-        self.mqtt.publish(Message::new(a.state_topic(&v.value_type), v.value.clone(), 0)).is_err()
+        self.mqtt
+            .publish(Message::new(
+                a.state_topic(&v.value_type),
+                v.value.clone(),
+                0,
+            ))
+            .is_err()
     }
 }
 
-#[post("/api", data="<data>")]
+#[post("/api", data = "<data>")]
 fn api(dev_ref: &State<BridgeReference>, data: &str) -> Status {
     let mut devices = match dev_ref.lock() {
         Ok(dev) => dev,
-        Err(_) => return Status::InternalServerError
+        Err(_) => return Status::InternalServerError,
     };
     let device_measurement: Measurement = match serde_json::from_str(data) {
         Ok(dev) => dev,
@@ -206,34 +231,43 @@ fn api(dev_ref: &State<BridgeReference>, data: &str) -> Status {
     };
     devices.update_device(&device_measurement);
     for v in &device_measurement.sensordatavalues {
-        if !devices.supported(&v) {
+        if !devices.supported(v) {
             continue;
         }
-        if !devices.seen(&device_measurement.airrohr, &v) {
-            if devices.advertise(&device_measurement.airrohr, &v) {
-                return Status::InternalServerError
-            }
-        }
-        if devices.send_data(&device_measurement.airrohr, &v) {
-            return Status::InternalServerError
+        if (!devices.seen(&device_measurement.airrohr, v)
+            && devices.advertise(&device_measurement.airrohr, v))
+            || devices.send_data(&device_measurement.airrohr, v)
+        {
+            return Status::InternalServerError;
         }
     }
     Status::Ok
 }
 
 #[launch]
-fn server() -> _{
+fn server() -> _ {
     let settings = config::Config::builder()
         .add_source(config::File::with_name("Settings"))
         .build()
         .expect("failed to read Settings.toml");
-    let file = File::open(&settings.get_string("sensors").expect("failed to get sensor definitions"))
-        .expect("unable to open def file");
+    let file = File::open(
+        &settings
+            .get_string("sensors")
+            .expect("failed to get sensor definitions"),
+    )
+    .expect("unable to open def file");
     let bridge = Bridge::new(
-        &settings.get_string("server").expect("failed to get server from settings"),
-        &settings.get_string("user").expect("failed to get user from settings"),
-        &settings.get_string("password").expect("failed to get password from settings"),
-        serde_json::from_reader(BufReader::new(file)).expect("failed to parse definitions"));
+        &settings
+            .get_string("server")
+            .expect("failed to get server from settings"),
+        &settings
+            .get_string("user")
+            .expect("failed to get user from settings"),
+        &settings
+            .get_string("password")
+            .expect("failed to get password from settings"),
+        serde_json::from_reader(BufReader::new(file)).expect("failed to parse definitions"),
+    );
     rocket::build()
         .mount("/", routes![api])
         .manage(Arc::new(Mutex::new(bridge)))
