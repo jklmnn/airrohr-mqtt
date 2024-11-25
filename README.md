@@ -81,6 +81,22 @@ $ cargo run
 ```
 By default it will listen to `localhost:8000`.
 
+
+## Running with Systemd
+
+One way to persist the execution, is to start it with systemd in the context of the current user. 
+An example configuration is provided in `airrohr-mqtt.service.EXAMPLE`.
+
+You want to copy this file to `~/.config/systemd/user/airrohr-mqtt.service`. Enable it with 
+`systemctl --user enable airrohr-mqtt.service`, start with 
+`systemctl --user start airrohr-mqtt.service`.
+
+Console output can be observed by `journalctl --user-unit airrohr-mqtt.service`. 
+
+In order to make it run, even when the user is not logged in, make sure to enable lingering. 
+You can use `loginctl`like so: `loginctl enable-linger`
+
+
 ## MQTT Integration
 
 The bridge publishes a device per Airrohr with all of its sensors with the following topics:
