@@ -1,0 +1,15 @@
+[Unit]
+Description=Brigde to provide Airrohr an API to deliver its data via MQTT to Homeassistant
+After=network.target
+
+[Service]
+Type=simple
+Environment="ROCKET_PORT=8008"
+Environment="ROCKET_ADDRESS=0.0.0.0"
+WorkingDirectory=/home/pi/airrohr-mqtt/
+ExecStart=/home/pi/.cargo/bin/cargo run
+CPUSchedulingPolicy=idle
+IOSchedulingClass=3
+
+[Install]
+WantedBy=default.target
